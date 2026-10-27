@@ -1,0 +1,139 @@
+name: thumb-local
+
+# 一键本地部署：MySQL 8 + Redis 7 + Pulsar 3.3 + Spring Boot + Vue/Nginx
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: thumb-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123456
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_DATABASE: thumb_db
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      # 使用数字偏移，避免精简镜像缺少时区数据库
+      - --default-time-zone=+08:00
+    ports:
+      # 宿主机 13306，避免与本机 MySQL 冲突
+      - "13306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 仅在数据卷为空（首次启动）时自动执行
+      - ./sql/create_table.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./deploy/mysql/02-seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks:
+      - thumb-net
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: thumb-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "16379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - thumb-net
+
+  pulsar:
+    image: apachepulsar/pulsar:3.3.4
+    container_name: thumb-pulsar
+    restart: unless-stopped
+    # -nfw：关闭 Functions Worker，本地开发无需，可显著降低内存占用
+    command: ["bin/pulsar", "standalone", "-nfw"]
+    environment:
+      TZ: Asia/Shanghai
+      PULSAR_MEM: "-Xms512m -Xmx1024m -XX:MaxDirectMemorySize=512m"
+    ports:
+      # 6650 供宿主机客户端调试，8080 为 Admin API
+      - "16650:6650"
+      - "18080:8080"
+    volumes:
+      - pulsar-data:/pulsar/data
+    healthcheck:
+      test: ["CMD-SHELL", "bin/pulsar-admin brokers healthcheck >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      # Pulsar standalone 首次启动需初始化 BookKeeper/ZooKeeper，留足时间
+      start_period: 90s
+    networks:
+      - thumb-net
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: thumb-backend:local
+    container_name: thumb-backend
+    restart: unless-stopped
+    environment:
+      # 切换 application-docker.yml
+      SPRING_PROFILES_ACTIVE: docker
+      TZ: Asia/Shanghai
+      JAVA_OPTS: "-Xms256m -Xmx512m"
+    ports:
+      # 直接暴露便于调试，前端仍通过 Nginx 同源访问
+      - "9199:9199"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pulsar:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9199/api/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks:
+      - thumb-net
+
+  frontend:
+    build:
+      context: ./thumb-front
+      dockerfile: Dockerfile
+    image: thumb-front:local
+    container_name: thumb-front
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      # 复用仓库自带图片作为演示博客封面，避免依赖外网图床
+      - ./public/images:/usr/share/nginx/html/images:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks:
+      - thumb-net
+
+volumes:
+  mysql-data:
+  redis-data:
+  pulsar-data:
+
+networks:
+  thumb-net:
+    driver: bridge

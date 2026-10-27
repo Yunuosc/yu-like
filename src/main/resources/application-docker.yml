@@ -1,0 +1,24 @@
+# Docker Compose 专用配置：容器内通过服务名访问中间件
+# 启动时由 compose 注入 SPRING_PROFILES_ACTIVE=docker 生效
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://mysql:3306/thumb_db?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: root123456
+  data:
+    redis:
+      database: 0
+      host: redis
+      port: 6379
+      # 本地部署不设密码，覆盖主配置中的 xxx
+      password: ""
+      timeout: 5000
+  # Pulsar 默认连接 localhost:6650，容器内必须改为服务名
+  pulsar:
+    client:
+      service-url: pulsar://pulsar:6650
+  # 登录态存 Redis，重启后端不会掉登录
+  session:
+    store-type: redis
+    timeout: 30m
